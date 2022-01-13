@@ -1,0 +1,299 @@
+---
+title: "Integration of Hutchinson and Howick data"
+author: "Virginia Howick"
+date: "26/10/2021"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/virginiahowick/Documents/Tryps")
+library(scater, quietly = TRUE)
+library(scmap)
+library(Seurat)
+library(scater)
+library(scran)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+```
+
+```{r, tidy=TRUE}
+load("/Users/virginiahowick/Documents/Tryps/T1_3")
+T1_3@meta.data$study <- rep("hutchinson", length(T1_3@meta.data$orig.ident))
+
+#vi.seurat <- readRDS("/Users/virginiahowick/Documents/Tryps/data/vi_seurat_20201020.rds")
+
+tca.qc.scran <- readRDS("howick_tryps_sce.rds")
+tca.seurat <- as.Seurat(tca.qc.scran, counts = "counts", data = "logcounts")
+Idents(tca.seurat) <- "seurat_clusters"
+#tca.seurat <- subset(x = tca.seurat, idents = "SG")
+tca.seurat <- FindVariableFeatures(tca.seurat, selection.method = "vst", nfeatures = 500)
+tca.seurat@meta.data$study <- rep("howick", length(tca.seurat@meta.data$sample_id))
+```
+
+
+##Perform integration
+We then identify anchors using the FindIntegrationAnchors function, which takes a list of Seurat objects as input, and use these anchors to integrate the two datasets together with IntegrateData.
+```{r, tidy=TRUE}
+p.anchors <- FindIntegrationAnchors(object.list = list(tca.seurat, T1_3), dims = 1:20)
+p.combined <- IntegrateData(anchorset = p.anchors, dims = 1:20)
+```
+
+##Perform an integrated analysis
+Now we can run a single integrated analysis on all cells!
+```{r, tidy=TRUE}
+DefaultAssay(p.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+p.combined <- ScaleData(p.combined, verbose = FALSE)
+p.combined <- RunPCA(p.combined, npcs = 30, verbose = FALSE)
+# t-SNE and Clustering
+#p.combined <- FindVariableFeatures(p.combined, selection.method = "vst", nfeatures = 500)
+#hvg <- HVFInfo(object = p.combined)
+#hvgfeat <- rownames(hvg)
+
+p.combined <- RunUMAP(p.combined,  reduction = "pca", dims = 1:20, seed.use=222)
+p.combined <- RunUMAP(p.combined,  reduction = "pca", dims = 1:20, umap.method = "uwot", n.neighbors = 5, min.dist = 2, spread = 3, seed.use=222)
+
+p <- DimPlot(p.combined, reduction = "umap", group.by = "study")
+p
+
+pdat <- p$data
+
+colors = c(howick = "#3399FF", hutchinson = "#FF9933")
+
+ggplot(pdat, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = study), size=0.5) + theme_bw() + 
+    scale_colour_manual(values = colors) +
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+p <- DimPlot(p.combined, reduction = "umap", label=TRUE)
+
+all2 <- p$data
+colnames(all2) <- c("UMAP_1", "UMAP_2", "paper_ids")
+
+pfcenters <- aggregate(all2[, 1:2], list(all2$paper_ids), mean)
+
+colors = c(C1 = "red", C2 = "orange", C3 = "gold", C4 = "seagreen3", C5 = "turquoise4", 
+    C6 = "#00CCFF", 'Attached Epimastigote' = "#6633FF", Gametes = "#CC00CC", Metacyclics = "purple", 'Midgut forms' = "cyan", 'Pre-metacyclic' = "coral")
+
+
+ggplot(all2, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(colour = paper_ids), size=2) + 
+  geom_text(aes(x=UMAP_1, y=UMAP_2, label=Group.1), data=pfcenters, hjust=0, vjust=0, size=2) +
+  theme_bw() + 
+    scale_colour_manual(values = colors, breaks = c("C1", "C2", "C3", "C4", 
+        "C5", "C6", "Midgut forms", "Gametes", "Attached Epimastigote", "Pre-metacyclic", "Metacyclics")) + 
+    theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+
+p.combined@meta.data$paper_ids <- Idents(p.combined)
+
+p.combined <- FindNeighbors(p.combined, reduction = "pca", dims = 1:20)
+p.combined <- FindClusters(p.combined, resolution = 0.8)
+
+DimPlot(p.combined, reduction = "umap")
+
+p1 <- DimPlot(p.combined, reduction = "umap", group.by = "paper_ids", label = TRUE)
+p2 <- DimPlot(p.combined, reduction = "umap", label = TRUE)
+plot_grid(p1, p2)
+
+all2 <- p2$data
+
+pfcenters <- aggregate(all2[, 1:2], list(all2$ident), mean)
+
+
+ggplot(all2, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(colour = ident), size=0.5) + 
+  geom_text(aes(x=UMAP_1, y=UMAP_2, label=Group.1), data=pfcenters, hjust=0, vjust=0) +
+  theme_bw() + 
+    theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+FeaturePlot(p.combined, "Tb927.10.12080")
+FeaturePlot(T1_3, "Tb927.10.12080")
+
+
+
+```
+
+##Identify conserved cell type markers
+To identify canonical cell type marker genes that are conserved across conditions, we provide the FindConservedMarkers function. This function performs differential gene expression testing for each dataset/group and combines the p-values using meta-analysis methods from the MetaDE R package.
+
+```{r, tidy=TRUE}
+DefaultAssay(p.combined) <- "RNA"
+Idents(p.combined) <- "seurat_clusters"
+
+gam.markers <- FindConservedMarkers(p.combined, ident.1 = 3, grouping.var = "study", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+head(gam.markers)
+
+anno <- read.csv("Tbb927_allanno.csv", header=TRUE)
+
+gam.markers$gene_id <- rownames(gam.markers)
+
+gam.markers$prod_desc <- anno[match(gam.markers$gene_id, anno[, 1]), 3]
+gam.markers$gene_name <- anno[match(gam.markers$gene_id, anno[, 1]), 6]
+
+
+#FeaturePlot(p.combined, features = c("ORTH-612", "ORTH-300", "ORTH-3513", "ORTH-1259"), min.cutoff = "q9", reduction = "umap")
+
+pc.markers <- FindConservedMarkers(p.combined, ident.1 = 4, grouping.var = "study", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+head(pc.markers)
+
+pc.markers$gene_id <- rownames(pc.markers)
+
+pc.markers$prod_desc <- anno[match(pc.markers$gene_id, anno[, 1]), 3]
+pc.markers$gene_name <- anno[match(pc.markers$gene_id, anno[, 1]), 6]
+
+FeaturePlot(p.combined, features = c("Tb927.3.4500", "Tb927.9.7470", "Tb927.4.4730", "Tb927.7.7090"), min.cutoff = "q9", reduction = "umap")
+
+
+
+s <- FeaturePlot(p.combined, features = c("Tb927.3.4500"), min.cutoff = "q9", reduction = "umap", max.cutoff = 3,
+    cols = c("grey", "red"))
+sdat <- s$data
+ps <- ggplot(sdat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "Tb927.3.4500"), size=0.5) + 
+  #labs(title="Tb927.3.4500") +
+  scale_colour_gradient(low = "grey", high = "blue") +
+  theme_bw() + 
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+ps
+
+f <- FeaturePlot(p.combined, features = c("Tb927.7.380"), min.cutoff = "q9", reduction = "umap", max.cutoff = 3,
+    cols = c("grey", "red"))
+fdat <- f$data
+pf <- ggplot(fdat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "Tb927.7.380"), size=0.5) + 
+  #labs(title="Tb927.7.380", x=element_blank(), y=element_blank()) +
+  scale_colour_gradient(low = "grey", high = "blue") +
+  theme_bw() + 
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+plot_grid(ps, pf)
+
+h <- FeaturePlot(p.combined, features = c("Tb927.10.10770"), min.cutoff = "q9", reduction = "umap", max.cutoff = 3,
+    cols = c("grey", "red"))
+fdat <- h$data
+pf <- ggplot(fdat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "Tb927.10.10770"), size=0.5) + 
+  #labs(title="Tb927.7.380", x=element_blank(), y=element_blank()) +
+  scale_colour_gradient(low = "grey", high = "blue") +
+  theme_bw() + 
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+pf
+
+#grid.arrange(pm, pf, po, ps, nrow=2, ncol=2)
+
+subgam.markers <- gam.markers[gam.markers$max_pval < 0.001, ] 
+subpc.markers <- pc.markers[pc.markers$max_pval < 0.001, ] 
+
+
+saveRDS(p.combined, file="hutch_howick_combo.rds")
+write.csv(subgam.markers, "hutch_howick_gam_markers.csv")
+write.csv(subpc.markers, "hutch_howick_pc_markers.csv")
+
+
+```
+
+```{r}
+p.sce <- as.SingleCellExperiment(p.combined)
+
+subsubgam <- subgam.markers[1:10, ]
+subsubgam$marker <- rep("gam", length(subsubgam$howick_p_val))
+subsubpc <- subpc.markers[1:10, ]
+subsubpc$marker <- rep("midgut", length(subsubpc$howick_p_val))
+
+# all <- rbind(subsubpc, subsubgam)
+# 
+# p.sce.m <- p.sce[rownames(p.sce) %in% rownames(all), ]
+# 
+# lcpm_mat <- as.data.frame(assays(p.sce.m)[["logcounts"]])
+# tmat <- t(lcpm_mat)
+# tmat <- as.data.frame(tmat)
+# 
+# tmat$seurat_cluster <- as.factor(p.sce$ident)
+# tmat$clust_paper <- paste(tmat$seurat_cluster, p.sce$study, sep="_")
+# tmat <- as.data.frame(tmat)
+# #lcpm_mat_sub <- lcpm_mat[!is.na(lcpm_mat$Cluster_k15), ]
+# 
+# clustmean <- aggregate(tmat[, 1:20], by = list(as.factor(as.character(tmat$clust_paper))), 
+#     mean)
+# rownames(clustmean) <- clustmean$Group.1
+# 
+# clustmean2 <- clustmean[, 2:21]
+# 
+# tcm2 <- as.data.frame(t(clustmean2))
+# 
+# 
+# pheatmap(tcm2, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE,
+#     color = brewer.pal(9, "PuRd"))
+```
+
+```{r}
+# m <- c(3,4)
+# tmatsub <- tmat[tmat$seurat_cluster %in% m, ]
+# 
+# clustmean <- aggregate(tmatsub[, 1:20], by = list(as.factor(as.character(tmatsub$clust_paper))), 
+#     mean)
+# rownames(clustmean) <- clustmean$Group.1
+# 
+# clustmean2 <- clustmean[, 2:21]
+# 
+# tcm2 <- as.data.frame(t(clustmean2))
+# 
+# 
+# pheatmap(tcm2, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE,
+#     color = brewer.pal(9, "PuRd"))
+# ```
+# 
+# 
+# ```{r}
+# tcm3 <- tcm2
+# 
+# tcm3$gene_id <- rownames(tcm3)
+# 
+# tcm3$gene_name <- anno[match(tcm3$gene_id, anno[, 1]), 6]
+# 
+# rownames(tcm3) <- paste(tcm3$gene_id, tcm3$gene_name, sep="_")
+# 
+# tcm4 <- tcm3[, 1:4]
+
+#pheatmap(tcm4, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE,
+ #   color = brewer.pal(9, "PuRd"))
+
+#pheatmap(tcm4, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE, cluster_rows = FALSE,
+#color = brewer.pal(9, "PuRd"), gaps_row = 10, gaps_col = 2)
+
+```
+
+```{r}
+
+# all$gene_anno <- paste(all$gene_id, all$gene_name, sep="_")
+# tcm5 <- tcm3[match(all$gene_id, tcm3$gene_id), ]
+# ann_c <- list(stage = cols)
+# 
+# 
+# rownames(rd) <- rd$man_anno
+# stage <- rd["stage"]
+
+
+#pheatmap(tcm5, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE, cluster_rows = FALSE,
+ #   color = brewer.pal(9, "PuRd"), gaps_row = 10, gaps_col = c(2,4,6,8), annotation_row=stage, fontsize = 8, annotation_colors = ann_c)
+```
+

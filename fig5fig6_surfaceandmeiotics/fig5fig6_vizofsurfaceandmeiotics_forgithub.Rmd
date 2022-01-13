@@ -1,0 +1,196 @@
+---
+title: "Viz of surface and meiotic markers"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+
+```{r, message=FALSE}
+setwd("/Users/virginiahowick/Documents/Tryps")
+library(slingshot)
+library(SingleCellExperiment)
+library(scater)
+library(viridis)
+library(pheatmap)
+library(reshape2)
+library(RColorBrewer)
+library(colorspace)
+library(tidyverse)
+```
+
+```{r}
+sling.sg <- readRDS("/Users/virginiahowick/Documents/Tryps/1738sling.sg_jan2021.rds")
+markergenes <- read.csv("/Users/virginiahowick/Documents/Tryps/WendyMarkers_4.csv", header=T)
+```
+
+```{r}
+exp <- as.data.frame(logcounts(sling.sg))
+dim(exp)
+
+
+exp$feature_symbol <- rownames(exp)
+subexp <- exp[exp$feature_symbol %in% markergenes$gene_id, ]
+subexp <- subexp[match(markergenes$gene_id, subexp$feature_symbol), ]
+
+#remove the feature_symbol column you just added
+subexp2 <- subexp[, 1:181]
+
+
+```
+
+```{r}
+cd <- as.data.frame(colData(sling.sg))
+cd <- cd[order(cd$slingPseudotime_1), ]
+subppt <- cd["slingPseudotime_1"]
+subppt <- rownames(subppt)
+
+subexp3 <- subexp2[, subppt]
+
+```
+
+```{r}
+markergenes2 <- markergenes[match(rownames(subexp2), markergenes$gene_id), ]
+rownames(markergenes2) <- markergenes2$gene_id
+group <- markergenes2["group"]
+
+markergenes2$anno <- paste(markergenes2$gene_id, markergenes2$gene_name, sep="::")
+```
+
+```{r}
+
+test <- which(group$group != dplyr::lag(group$group))
+test2 <- test-1
+
+```
+
+```{r}
+attachment <- cd["attachment"]
+time <- cd["time"]
+combo <- cbind(attachment, time)
+
+```
+
+
+
+```{r}
+
+all <- readRDS("/Users/virginiahowick/Documents/Tryps/for_github/sc_data/howick_tryps_sce.rds")
+
+all_lc <- as.data.frame(logcounts(all))
+
+all_lc$feature_symbol <- rownames(all_lc)
+subexp <- all_lc[all_lc$feature_symbol %in% markergenes$gene_id, ]
+subexp <- subexp[match(markergenes$gene_id, subexp$feature_symbol), ]
+
+#remove the feature_symbol column you just added
+subexp2 <- subexp[, 1:388]
+
+tall <- as.data.frame(t(subexp2))
+tall[1:5, 1:5] 
+
+
+tall$cluster <- as.factor(all$cluster_name)
+
+
+clustmean <- aggregate(tall[, 1:33], by = list(as.factor(as.character(tall$cluster))), 
+    mean)
+rownames(clustmean) <- clustmean$Group.1
+
+clustmean2 <- clustmean[, 2:34]
+
+tcm2 <- as.data.frame(t(clustmean2))
+
+
+barps <- markergenes[markergenes$group=="BARP", ]
+nob <- tcm2[!(rownames(tcm2) %in% barps$gene_id), ]
+
+markergenes3 <- markergenes2[!(rownames(markergenes2) %in% barps$gene_id), ]
+group2 <- markergenes3["group"]
+
+rownames(nob) <- markergenes3$anno
+group3 <- group2
+rownames(group3) <- rownames(nob)
+pheatmap(nob, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE, annotation_row = group3,
+    color = brewer.pal(9, "PuRd"))
+
+
+subexp4 <- subexp3[!(rownames(subexp3) %in% barps$gene_id), ]
+
+rownames(subexp4) <- rownames(nob)
+group4 <- group2
+rownames(group4) <- rownames(nob)
+```
+
+
+fig 6 A
+```{r}
+impmarks <- c("Tb927.10.12080","Tb927.6.510", "Tb927.10.10260", "Tb927.9.7040", "Tb927.10.10770")
+
+all_lc <- as.data.frame(logcounts(all))
+
+subexp <- all_lc[rownames(all_lc) %in% impmarks, ]
+
+tsub <- as.data.frame(t(subexp))
+tsub$cluster <- all$cluster_name
+tsub2 <- tsub %>%
+  pivot_longer(!(c(Tb927.10.12080, cluster)), names_to = "other_gene", values_to = "exp")
+
+hap2 <- tsub2[tsub2$other_gene=="Tb927.10.10770", ]
+p <- ggplot(hap2, aes(Tb927.10.12080, exp)) + geom_point(aes(colour=cluster))
+
+
+clustcol <- c(`C1` = "purple", `C4` = "royalblue1", `C6` = "limegreen", `C2` = "salmon", 
+    `C5` = "skyblue4", `C3` = "hotpink")
+
+tsub2$anno <- markergenes3[match(tsub2$other_gene, markergenes3[, 1]), 2]
+
+tsub2$anno <- ordered(tsub2$anno, levels=c("HAP2", "GEX1", "GPEET", "EP1"))
+ggplot(tsub2, aes(Tb927.10.12080, exp)) + geom_point(aes(colour=cluster)) + facet_grid(~anno) + scale_color_manual(values = clustcol) + theme_bw() +labs( y = "log2 counts", color = "Cluster")
+```
+
+
+```{r}
+yb <- tcm2[rownames(tcm2) %in% barps$gene_id, ]
+ybmean <- as.data.frame(colMeans(yb))
+
+tcm2 <- as.data.frame(t(clustmean2))
+
+barps <- markergenes[markergenes$group=="BARP", ]
+nob <- tcm2[!(rownames(tcm2) %in% barps$gene_id), ]
+
+```
+
+Fig 5A
+```{r}
+subexp5 <- subexp4
+rownames(subexp5) <- rownames(nob)
+rownames(group2) <- rownames(nob)
+test <- which(group4$group != dplyr::lag(group4$group))
+test2 <- test-1
+
+attach_col <- c(attached = "#0E3F5C", free = "#D1FBD4")
+time_col <- c(day40 = "dodgerblue", day21 = "darkmagenta", day24 = "darkolivegreen1")
+group_col <- c("GPEET/EP"= "mediumpurple1", "meiotic"="salmon", "candidate"="deepskyblue")
+barp_col <- sequential_hcl(10, palette = "Mint")
+ann_c <- list(time = time_col, attachment = attach_col, group4=group_col, ybmean=barp_col)
+
+pheatmap(subexp5, cluster_cols=FALSE, cluster_rows=FALSE ,color=inferno(10), annotation_names_row = TRUE, show_colnames = FALSE, annotation_row = group4, annotation_col = combo, gaps_row = test2, annotation_colors = ann_c, fontsize = 8, border_color = NA)
+
+```
+
+Fig 5B
+```{r}
+
+colnames(group4) <- "group4"
+colnames(ybmean) <- "ybmean"
+
+
+pheatmap(nob, show_colnames = TRUE, show_rownames = TRUE, cluster_cols = FALSE, annotation_row = group4, annotation_col = ybmean,
+    color = inferno(10), annotation_colors=ann_c)
+
+hcl_palettes(plot = TRUE)
+```
+

@@ -1,0 +1,219 @@
+---
+title: "Looking at RSEM vsg analysis results"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/virginiahowick/Documents/Tryps/VSG")
+library(scater)
+library(pheatmap)
+library(viridis)
+library(RColorBrewer)
+library(tidyverse)
+library(gplots)
+library(devtools)
+```
+
+```{r}
+tca <- readRDS("/Users/virginiahowick/Documents/Tryps/for_github/sc_data/howick_tryps_sce.rds")
+```
+
+```{r}
+
+counts <- read.csv("/Users/virginiahowick/Documents/Tryps/VSG/allgenes.alltotalgenes.results.csv", header=TRUE, row.names = 1)
+combovsg <- read.csv("/Users/virginiahowick/Documents/Tryps/VSG/blastpmvsg.outfmt6.csv", header=TRUE)
+plot(combovsg$length, combovsg$pident)
+
+ggplot(combovsg, aes(x=length, y=pident)) + geom_point() + theme_bw()
+combovsg <- droplevels(subset(combovsg, pident > 90))
+#combovsg <- droplevels(subset(combovsg, length > 300))
+length(unique(combovsg$gene_id))
+#combovsg$for19 <- paste(combovsg$gene_id, combovsg$isoform, sep = "_")
+
+combovsgcounts <- counts[rownames(counts) %in% combovsg$gene_id, ]
+
+dim(combovsgcounts)
+
+#sample ids were different for RSEM and need to subset to cells of interest
+cd <- as.data.frame(colData(tca))
+
+subcd <- cd[cd$rsemname %in% colnames(combovsgcounts), ]
+
+subcombovsgcounts <- combovsgcounts[, colnames(combovsgcounts) %in% cd$rsemname]
+
+subcd <- subcd[match(colnames(subcombovsgcounts), subcd$rsemname), ]
+rownames(subcd) <- subcd$rsemname
+
+#Sum counts for VSG that are on top of eachother
+subcombovsgcounts <- aggregate(subcombovsgcounts, list(Group=replace(rownames(subcombovsgcounts),rownames(subcombovsgcounts) %in% c("TRINITY_DN13046_c0_g1","TRINITY_DN13046_c0_g2"), "TRINITY_DN13046_c0_g1g2")), sum)
+
+rownames(subcombovsgcounts) <- subcombovsgcounts$Group
+subcombovsgcounts <- subcombovsgcounts[ , 2:389]
+
+subcombovsgcounts <- aggregate(subcombovsgcounts, list(Group=replace(rownames(subcombovsgcounts),rownames(subcombovsgcounts) %in% c("TRINITY_DN143_c0_g1","TRINITY_DN143_c0_g2"), "TRINITY_DN143_c0_g1g2")), sum)
+
+rownames(subcombovsgcounts) <- subcombovsgcounts$Group
+subcombovsgcounts <- subcombovsgcounts[ , 2:389]
+```
+
+
+```{r}
+#make SCE with vsg counts
+vsg <- SingleCellExperiment(assays = 
+  list(
+  counts = as.matrix(subcombovsgcounts),
+  logcounts = log2(as.matrix(subcombovsgcounts) + 1)
+), colData = subcd)
+
+#filter_genes <- apply(counts(mca[ , colData(mca)$use]), 1, function(x) length(x[x >= 1]) >= 2)
+
+CellQC <- perCellQCMetrics(vsg)
+FeatQC <- perFeatureQCMetrics(vsg)
+
+colData(vsg)$sumcomboVSG <- CellQC$sum
+colData(vsg)$detectedcomboVSG <- CellQC$detected
+
+counts <- as.data.frame(counts(vsg))
+
+#cells must have more than one read to count as expressing that VSG
+counts[counts == 1] <-  0
+
+colData(vsg)$sum_g1_VSG <- (as.data.frame(colSums(counts)))$`colSums(counts)`
+
+
+numcellsexp <- apply(counts, 1, function(x) length(x[x > 1]))
+numcellsexp
+
+#add number of VSG detected to coldata
+detected_g1_VSG <- apply(as.data.frame(t(counts)), 1, function(x) length(x[x > 1]))
+colData(vsg)$detected_g1_VSG <- (as.data.frame(detected_g1_VSG))$detected_g1_VSG
+
+#add sum of total vsg to coldata
+colData(vsg)$sumlogcountsVSG <- colSums(as.data.frame(logcounts(vsg)))
+colnames(FeatQC) <- c("comboVSGmean", "comboVSGdetected")
+rowData(vsg) <- cbind(rowData(vsg), FeatQC)
+
+
+mean(vsg$sumcomboVSG)
+mean(vsg$detectedcomboVSG)
+
+mean(vsg$sum_g1_VSG)
+mean(vsg$detected_g1_VSG)
+
+vsg <- vsg[, vsg$num_cells == "SC"]
+median(colData(vsg)$detected_g1_VSG)
+
+data <- as.data.frame(colData(vsg))
+
+tapply(data$sum_g1_VSG, data$spr_strain, mean)
+tapply(data$sum_g1_VSG, data$sc3_6_clusters, mean)
+
+```
+
+
+```{r}
+tab <- as.data.frame(colData(vsg))
+ggplot(tab, aes(x=detectedcomboVSG, fill = strain)) + geom_histogram(bins = 20) + facet_grid(sc3_6_clusters~., scales="free")
+
+```
+
+
+```{r}
+
+lc <- as.data.frame(logcounts(vsg))
+tlc <- as.data.frame(t(lc))
+tlc$cell <- rownames(tlc)
+
+tlc2 <- tlc %>% pivot_longer(cols = starts_with("TRINITY"), names_to = "gene_id", values_to = "logcounts")
+tlc2$cluster <- data[match(tlc2$cell, data[, 47]), 40]
+
+#ggplot(tlc2, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity") + facet_grid(cluster~., scales="free")
+ggplot(tlc2, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity") + facet_grid(cols = vars(cluster), scales="free")
+
+tlc2$detected_g1_VSG <- data[match(tlc2$cell, data[, 47]), 54]
+tlc3 <- tlc2[tlc2$detected_g1_VSG > 0, ]
+ggplot(tlc3, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity") + facet_grid(cols = vars(cluster), scales="free", space="free") 
+
+tlc3$cluster_name <- rep("C1", length(tlc3$cell))
+tlc3[which(tlc3$cluster==4), ]$cluster_name <- "C2"
+tlc3[which(tlc3$cluster==6), ]$cluster_name <- "C3"
+tlc3[which(tlc3$cluster==5), ]$cluster_name <- "C4"
+tlc3[which(tlc3$cluster==2), ]$cluster_name <- "C5"
+tlc3[which(tlc3$cluster==3), ]$cluster_name <- "C6"
+
+ggplot(tlc3, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity") + facet_grid(cols = vars(cluster_name), scales="free", space="free") + geom_col(position = "dodge") + theme_bw() + theme(axis.text.x = element_blank())
+```
+
+```{r}
+data <- as.data.frame(colData(vsg))
+data$cluster_name <- rep("C1", length(data$sample_id))
+data[which(data$sc3_6_clusters==4), ]$cluster_name <- "C2"
+data[which(data$sc3_6_clusters==6), ]$cluster_name <- "C3"
+data[which(data$sc3_6_clusters==5), ]$cluster_name <- "C4"
+data[which(data$sc3_6_clusters==2), ]$cluster_name <- "C5"
+data[which(data$sc3_6_clusters==3), ]$cluster_name <- "C6"
+
+
+pcentFun <- function(x) {
+    res <- x > 0
+    100 * (sum(res) / length(res))
+}
+
+with(data, tapply(data$detectedcomboVSG, cluster_name, pcentFun))
+```
+
+```{r}
+subdata <- data[data$detected_g1_VSG > 0, ]
+pcentFun <- function(x) {
+    res <- x >= 1
+    100 * (sum(res) / length(res))
+}
+with(data, tapply(data$detected_g1_VSG, data$cluster_name, pcentFun))
+with(subdata, tapply(subdata$detected_g1_VSG, subdata$cluster_name, mean))
+
+pcentFun <- function(x) {
+    res <- x >= 2
+    100 * (sum(res) / length(res))
+}
+with(subdata, tapply(subdata$detected_g1_VSG, subdata$cluster_name, pcentFun))
+
+g1 <- subdata$rsemname
+
+tlc4 <- tlc3[tlc3$cell %in% g1, ]
+
+ggplot(tlc4, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity", colour="black", size=0.2) + facet_grid(cols = vars(cluster_name), scales="free", space="free") + geom_col(position = "dodge") + theme_bw() + theme(axis.text.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+#######
+tlc4$spr_strain <- data[match(tlc4$cell, data[, 47]), 50]
+
+ggplot(tlc4, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity", colour="black", size=0.2) + facet_grid(cols = vars(cluster_name, spr_strain), scales="free", space="free")  + theme_classic() + theme(axis.text.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "none")
+
+
+tlc5 <- tlc4[tlc4$logcounts > 1 , ]
+
+clustcol <- c("mediumseagreen", "gold2" , "mediumvioletred", "blue", "cyan3", "honeydew4", "darkmagenta","navy" , "dodgerblue", "salmon", "deepskyblue4",  "purple", "thistle3")
+
+
+col2hex(c("mediumseagreen", "gold2" , "mediumvioletred", "blue", "cyan3", "honeydew4", "darkmagenta","navy" , "dodgerblue", "salmon", "deepskyblue4"))
+
+ggplot(tlc5, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity", colour="black", size=0.2) + facet_grid(cols = vars(cluster_name, spr_strain), scales="free", space="free")  + theme_classic() + theme(axis.text.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +  scale_fill_manual(values=clustcol)
+
+ggplot(tlc5, aes(x=cell, y=logcounts, fill = gene_id)) + geom_bar(position="stack", stat="identity", colour="black", size=0.2) + facet_grid(cols = vars(cluster_name, spr_strain), scales="free", space="free")  + theme_classic() + theme(axis.text.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "none") +  scale_fill_manual(values=clustcol)
+
+
+```
+
+
+```{r}
+write.csv(as.data.frame(colData(tca)), file="/Users/virginiahowick/Documents/Tryps/for_github/vsgcoldata_forgithub.csv")
+write.csv(subcombovsgcounts, file="/Users/virginiahowick/Documents/Tryps/for_github/fig2_subcombovsgcounts_forgithub.csv")
+
+session_info()
+```
+

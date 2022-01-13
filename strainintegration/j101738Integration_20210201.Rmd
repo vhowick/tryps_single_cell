@@ -1,0 +1,201 @@
+---
+title: "Integration of day 24 sg 1738 and J10 data to identify strain specific expression"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/Tryps/ANALYSIS_2")
+library(scater, quietly = TRUE)
+library(scmap)
+library(Seurat)
+library(scater)
+library(scran)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(pheatmap)
+library(colorspace)
+```
+
+```{r}
+
+tca.qc.scran <- readRDS("/Users/vh3/Documents/Tryps/ANALYSIS/tca.qc_20200519.rds")
+
+tca.qc.scran[, which(is.na(tca.qc.scran$time))]$time <- "day21"
+
+tca.qc.scran[, which(tca.qc.scran$run_number == "29748_4")]$run_number <- "29784_4"
+tca.qc.scran$barcode <- paste(tca.qc.scran$run_number, tca.qc.scran$npgnum, "sorted.bam", 
+    sep = "_")
+
+sprcell <- read.csv("sprcell927_forhaynes_20200519.csv", row.names = 1)
+
+tca.qc.scran$assignment <- sprcell[match(tca.qc.scran$barcode, sprcell[, 1]), 3]
+tca.qc.scran$status <- rep("singlet", length(tca.qc.scran$sample_id))
+tca.qc.scran$status <- sprcell[match(tca.qc.scran$barcode, sprcell[, 1]), 2]
+tca.qc.scran[, which(is.na(tca.qc.scran$status))]$status <- "singlet"
+
+
+tca.qc.scran$spr_strain <- rep("1738", length(tca.qc.scran$sample_id))
+tca.qc.scran[, which(tca.qc.scran$assignment == "1")]$spr_strain <- "J10"
+tca.qc.scran[, which(tca.qc.scran$assignment == "0/1")]$spr_strain <- "hybrid"
+tca.qc.scran[, which(tca.qc.scran$assignment == "1/0")]$spr_strain <- "hybrid"
+
+
+cont <- "SG_337"
+tca.qc.scran <- tca.qc.scran[ , tca.qc.scran$sample_id != cont]
+
+sg <- tca.qc.scran[, tca.qc.scran$time=="day24"]
+
+cd <- read.csv("fig1_sc3_clusters_cd.csv", header = TRUE, row.names = 1)
+
+sg$fig1_sc3_6_clusters <- cd[match(sg$sample_id, cd[,1]), 40]
+
+#sling.sg <- readRDS("slingSGday24_202012016.rds")
+
+sg.1738 <- sg[, sg$spr_strain=="1738"]
+sg.J10 <- sg[ , sg$spr_strain=="J10"]
+
+```
+
+```{r}
+
+set.seed(222)
+clusters <- quickCluster(sg.1738, min.size=10)
+sg.1738 <- computeSumFactors(sg.1738, clusters=clusters, min.mean=10)
+sg.1738 <- logNormCounts(sg.1738, log=FALSE, size_factors=sizeFactors(sg.1738))
+
+set.seed(222)
+clusters <- quickCluster(sg.J10, min.size=10)
+sg.J10 <- computeSumFactors(sg.J10, clusters=clusters, min.mean=10)
+sg.J10 <- logNormCounts(sg.J10, log=FALSE, size_factors=sizeFactors(sg.J10))
+
+
+sg1738.seurat <- as.Seurat(sg.1738, counts = "counts", data = "logcounts")
+Idents(sg1738.seurat) <- "spr_strain"
+sg1738.seurat <- FindVariableFeatures(sg1738.seurat, selection.method = "vst", nfeatures = 500)
+
+sgJ10.seurat <- as.Seurat(sg.J10, counts = "counts", data = "logcounts")
+Idents(sgJ10.seurat) <- "spr_strain"
+sgJ10.seurat <- FindVariableFeatures(sgJ10.seurat, selection.method = "vst", nfeatures = 500)
+
+p.anchors <- FindIntegrationAnchors(object.list = list(sg1738.seurat, sgJ10.seurat), dims = 1:30, max.features = 100, k.anchor = 5, k.filter = 50)
+p.combined <- IntegrateData(anchorset = p.anchors, dims = 1:10)
+
+
+DefaultAssay(p.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+p.combined <- ScaleData(p.combined, verbose = FALSE)
+p.combined <- RunPCA(p.combined, npcs = 30, verbose = FALSE)
+
+p.combined <- FindNeighbors(p.combined, reduction = "pca", dims = 1:20)
+p.combined <- FindClusters(p.combined, resolution = 0.8)
+
+
+```
+
+```{r}
+
+# t-SNE and Clustering
+#p.combined <- FindVariableFeatures(p.combined, selection.method = "vst", nfeatures = 500)
+#hvg <- HVFInfo(object = p.combined)
+#hvgfeat <- rownames(hvg)
+p.combined <- RunUMAP(p.combined,  reduction = "pca", dims = 1:30, umap.method = "uwot", n.neighbors = 5, min.dist = 2, spread = 3, seed.use=222)
+p <- DimPlot(p.combined, reduction = "umap", group.by = "spr_strain")
+pdat <- p$data
+
+colors = c(`1738` = "#009B95", hybrid = "#4B0055", J10 = "#FDE333")
+
+ggplot(pdat, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = spr_strain), size=1.2) + theme_bw() + 
+    scale_colour_manual(values = colors) +
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+p <- DimPlot(p.combined, reduction = "umap")
+ pdat <- p$data
+ ggplot(pdat, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = ident), size=1.2) + theme_bw() + 
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10))
+ 
+ table(p.combined$seurat_clusters, p.combined$spr_strain)
+ 
+p <-  DimPlot(p.combined, reduction = "umap", group.by = "fig1_sc3_6_clusters")
+p
+pdat <- p$data
+clustcol <- c(`1` = "purple", `2` = "royalblue1", `3` = "limegreen", `4` = "salmon", 
+    `5` = "skyblue4", `6` = "hotpink")
+ ggplot(pdat, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = fig1_sc3_6_clusters), size=1.2) + theme_bw() + 
+   scale_color_manual(values=clustcol) +
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+ 
+ p <-  DimPlot(p.combined, reduction = "umap", group.by = "plate_name")
+p
+ 
+```
+
+```{r}
+DefaultAssay(p.combined) <- "RNA"
+Idents(p.combined) <- "seurat_clusters"
+
+p.combined@meta.data$strain2 <- p.combined@meta.data$spr_strain
+p.combined@meta.data[which(p.combined@meta.data$spr_strain=="1738"), ]$strain2 <- "s1738"
+
+
+#zero.markers <- FindConservedMarkers(p.combined, ident.1 = 0, ident.2 = NULL, grouping.var = "strain2", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+#head(zero.markers)
+
+p.combined$clust_strain <- paste(Idents(p.combined), p.combined$spr_strain, sep = "_")
+p.combined$celltype <- Idents(p.combined)
+Idents(p.combined) <- "clust_strain"
+strain.spec <- FindMarkers(p.combined, ident.1 = "0_1738", ident.2 = "0_J10", verbose = FALSE)
+
+subss <- strain.spec[strain.spec$p_val_adj < 0.05, ]
+#subss2 <- subss[subss$avg_logFC > 2, ]
+
+write.csv(subss, file = "strainDE_clust0p0.05.csv")
+
+
+
+```
+
+```{r}
+Idents(p.combined) <- "seurat_clusters"
+c0 <- WhichCells(p.combined, idents = 0)
+sg2 <- sg[rownames(sg) %in% rownames(subss), ]
+sg2 <- sg2[, colnames(sg2)%in% c0]
+exp <- as.data.frame(logcounts(sg2))
+dim(exp)
+
+# exp$feature_symbol <- rownames(exp)
+# subexp <- exp[exp$feature_symbol %in% markergenes$gene_id, ]
+# subexp <- subexp[match(markergenes$gene_id, subexp$feature_symbol), ]
+
+#remove the feature_symbol column you just added
+# subexp2 <- subexp[, 1:3]
+
+#rename the gene_id with name
+#rownames(subexp2) <- markergenes$wendy_description
+
+
+pheatmap(exp, cluster_cols=TRUE, cluster_rows=FALSE ,color=inferno(10), annotation_names_row = TRUE, show_colnames = FALSE)
+
+cd <- as.data.frame(colData(sg2))
+strain <- cd["spr_strain"]
+lfc <- subss["avg_logFC"]
+
+pheatmap(exp, cluster_cols=TRUE, cluster_rows=FALSE ,color=inferno(10), annotation_names_row = TRUE, show_colnames = FALSE, annotation_col = strain, annotation_row = lfc)
+
+lfc_col <- diverge_hcl(10, palette = "Blue-Red")
+colors = c(`1738` = "#009B95", J10 = "#FDE333")
+ann_c <- list(spr_strain=colors , avg_logFC=lfc_col)
+
+pheatmap(exp, cluster_cols=TRUE, cluster_rows=FALSE ,color=inferno(10), annotation_names_row = TRUE, show_colnames = FALSE, annotation_col = strain, annotation_row = lfc, annotation_colors = ann_c, border_color = NA)
+```
+

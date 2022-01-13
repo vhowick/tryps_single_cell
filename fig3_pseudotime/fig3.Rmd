@@ -1,0 +1,349 @@
+---
+title: "Slingshot and tradeseq with all 1738 SG cells"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/virginiahowick/Documents/Tryps")
+library(tradeSeq)
+library(scran)
+library(SingleCellExperiment)
+library(scater)
+library(SC3)
+library(slingshot)
+library(RColorBrewer)
+library(colorspace)
+library(viridis)
+library(monocle)
+library(devtools)
+library(pheatmap)
+```
+
+```{r}
+
+sc3_sg <- readRDS("sc3_1738sg_20201217.rds")
+
+sc3_sg[, which(is.na(sc3_sg$time))]$time <- "day21"
+
+um <- plotUMAP(sc3_sg, colour_by="time", shape_by="attachment", add_legend=TRUE)
+umdat <- um$data
+ggplot(umdat, aes(X, Y)) + geom_point(aes(colour = colour_by), 
+    size = 2) + labs(x = "UMAP 1", y = "UMAP 2", color = "time") + 
+    theme_classic() + theme(axis.text = element_blank())
+
+
+```
+
+```{r}
+sling.sg <- slingshot(sc3_sg, clusterLabels = "sc3_4_clusters", reducedDim = reducedDim(sc3_sg, 
+    "UMAP"), allow.breaks = FALSE, shrink = 1, reweight = TRUE, start.clus = "1", 
+    end.clus = "3")
+
+#saveRDS(sling.sg, file="1738sling.sg_jan2021.rds")
+
+summary(sling.sg$slingPseudotime_1)
+
+lnes2 <- getLineages(reducedDim(sling.sg, "UMAP"), sling.sg$sc3_3_clusters, 
+    start.clus = "1", end.clus = "3")
+
+lnes2@lineages
+
+colors <- colorRampPalette(brewer.pal(11, "Spectral")[-6])(100)
+plotcol <- colors[cut(sling.sg$slingPseudotime_1, breaks = 100)]
+plot(reducedDims(sling.sg)$UMAP, col = plotcol, pch = 16, asp = 1)
+lines(SlingshotDataSet(sling.sg), lwd = 2, col = "black")
+```
+
+```{r}
+counts <- as.matrix(counts(sling.sg))
+set.seed(5)
+icMat <- evaluateK(counts = counts, sds = SlingshotDataSet(sling.sg), k = 3:20, 
+                   nGenes = 200, verbose = T)
+```
+
+```{r}
+set.seed(7)
+
+crv <- SlingshotDataSet(sling.sg)
+
+pseudotime <- slingPseudotime(crv, na = FALSE)
+cellWeights <- slingCurveWeights(crv)
+sce <- fitGAM(counts = counts, pseudotime = pseudotime, cellWeights = cellWeights,  nknots = 8, verbose = FALSE)
+```
+
+```{r}
+table(rowData(sce)$tradeSeq$converged)
+```
+
+
+Within-lineage comparisons
+Association of gene expression with pseudotime
+A first exploration of the data analysis may consist of checking whether gene expression is associated with a particular lineage. The statistical test performed here, implemented in the associationTest function, is testing the null hypothesis that all smoother coefficients are equal to each other. This can be interpreted as testing whether the average gene expression is significantly changing along pseudotime.
+```{r}
+assoRes <- associationTest(sce)
+head(assoRes)
+
+assoRes <- assoRes[order(assoRes$pvalue), ]
+assoResSub <- assoRes[assoRes$pvalue < 0.001, ]
+write.csv(assoResSub, file="assoRes_1738sg_0.001_forgithub.csv")
+#saveRDS(sling.sg, "slingSGday24_202012016.rds")
+#saveRDS(sce, "slingtradeseqSGday24_202012016.rds")
+```
+
+```{r}
+siggenes <- rownames(assoResSub)
+
+##subset row data and then subset your single cell object so you just have genes of interest
+
+keepsig <- rownames(sling.sg) %in% siggenes
+obj <- sling.sg[keepsig, ]
+
+
+#set the order of stages
+ord <- obj[, order(obj$slingPseudotime_1)]
+
+ordexp <- logcounts(ord)
+
+celldata <- colData(ord)
+
+clust <- as.data.frame(celldata$sc3_4_clusters)
+row.names(clust) <- colnames(ordexp)
+colnames(clust) <- "cluster"
+
+
+
+test <- pheatmap(ordexp, cluster_cols=FALSE,cluster_rows=TRUE ,  
+         annotation_col=clust, show_colnames = FALSE, show_rownames = FALSE, color=brewer.pal(9, "PuRd"), clustering_distance_rows="correlation")
+```
+
+```{r}
+cuts <- as.data.frame(cutree(test$tree_row, k = 30))
+colnames(cuts) <- "k10clusts"
+
+
+map <- pheatmap(ordexp, cluster_cols=FALSE,cluster_rows=TRUE ,  
+         annotation_row=cuts, show_colnames = FALSE, show_rownames = FALSE, color=brewer.pal(9, "PuRd"), cutree_rows = 10, annotation_names_row = TRUE, fontsize_row= 5, clustering_distance_rows="correlation")
+```
+
+```{r}
+map.clust <- cbind(ordexp, 
+                      cluster = cutree(map$tree_row, 
+                                       k = 20))
+map.clust <- as.data.frame(map.clust)
+
+clustmean <- aggregate(map.clust[, 1:160], by= list(as.factor(map.clust$cluster)), mean)
+
+subclustmean <- clustmean[, 2:161]
+rownames(subclustmean) <- clustmean$Group.1
+
+
+pheatmap(subclustmean, cluster_cols=FALSE,cluster_rows=TRUE ,  annotation_col = clust,
+         show_colnames = FALSE, show_rownames = TRUE, color=brewer.pal(9, "PuRd"))
+```
+
+```{r}
+library(monocle)
+
+
+
+expmatrix <- as.matrix(counts(sling.sg))
+pheno <- as.data.frame(colData(sling.sg))
+pd <- new("AnnotatedDataFrame", data = pheno)
+
+msg <- newCellDataSet(expmatrix, phenoData = pd, expressionFamily = negbinomial.size())
+msg <- estimateSizeFactors(msg)
+msg <- estimateDispersions(msg)
+
+msg$Pseudotime <- msg$slingPseudotime_1
+
+table(is.na(rownames(assoResSub)))
+
+siggenes2 <-siggenes[1:691]
+plot_pseudotime_heatmap(msg[siggenes2, ],
+                num_clusters = 20,
+                cores = 1,
+                show_rownames = F)
+```
+
+Modify monocle heatmap function to get better colors
+```{r}
+plot_pseudotime_heatmap2 <- function(cds_subset, 
+                                    
+                                    cluster_rows = TRUE,
+                                    hclust_method = "ward.D2", 
+                                    num_clusters = 6,
+                                    
+                                    hmcols = NULL, 
+                                    
+                                    add_annotation_row = NULL,
+                                    add_annotation_col = NULL,
+                                    show_rownames = FALSE, 
+                                    use_gene_short_name = TRUE,
+                                    
+                                    norm_method = c("log", "vstExprs"), 
+                                    scale_max=3, 
+                                    scale_min=-3, 
+                                    
+                                    trend_formula = '~sm.ns(Pseudotime, df=3)',
+                                    
+                                    return_heatmap=FALSE,
+                                    cores=1){
+  num_clusters <- min(num_clusters, nrow(cds_subset))
+  pseudocount <- 1
+  newdata <- data.frame(Pseudotime = seq(min(pData(cds_subset)$Pseudotime), max(pData(cds_subset)$Pseudotime),length.out = 100)) 
+  
+  m <- genSmoothCurves(cds_subset, cores=cores, trend_formula = trend_formula,  
+                       relative_expr = T, new_data = newdata)
+  
+
+  #remove genes with no expression in any condition
+  m=m[!apply(m,1,sum)==0,]
+  
+  norm_method <- match.arg(norm_method)
+  
+  # FIXME: this needs to check that vst values can even be computed. (They can only be if we're using NB as the expressionFamily)
+  if(norm_method == 'vstExprs' && is.null(cds_subset@dispFitInfo[["blind"]]$disp_func) == FALSE) {
+    m = vstExprs(cds_subset, expr_matrix=m)
+  }     
+  else if(norm_method == 'log') {
+    m = log10(m+pseudocount)
+  }
+  
+  # Row-center the data.
+  m=m[!apply(m,1,sd)==0,]
+  m=Matrix::t(scale(Matrix::t(m),center=TRUE))
+  m=m[is.na(row.names(m)) == FALSE,]
+  m[is.nan(m)] = 0
+  m[m>scale_max] = scale_max
+  m[m<scale_min] = scale_min
+
+  heatmap_matrix <- m
+  
+  row_dist <- as.dist((1 - cor(Matrix::t(heatmap_matrix)))/2)
+  row_dist[is.na(row_dist)] <- 1
+  
+  if(is.null(hmcols)) {
+    bks <- seq(-3.1,3.1, by = 0.1)
+    hmcols <- inferno(length(bks) - 1)
+  }
+  else {
+    bks <- seq(-3.1,3.1, length.out = length(hmcols))
+  } 
+  
+  ph <- pheatmap(heatmap_matrix, 
+                 useRaster = T,
+                 cluster_cols=FALSE, 
+                 cluster_rows=cluster_rows, 
+                 show_rownames=F, 
+                 show_colnames=F, 
+                 clustering_distance_rows=row_dist,
+                 clustering_method = hclust_method,
+                 cutree_rows=num_clusters,
+                 silent=TRUE,
+                 filename=NA,
+                 breaks=bks,
+                 border_color = NA,
+                 color=hmcols)
+
+  if(cluster_rows) {
+    annotation_row <- data.frame(Cluster=factor(cutree(ph$tree_row, num_clusters)))
+    write.csv(annotation_row, file="annrow2_forgithub.csv")
+  } else {
+    annotation_row <- NULL
+  }
+  
+  if(!is.null(add_annotation_row)) {
+    old_colnames_length <- ncol(annotation_row)
+    annotation_row <- cbind(annotation_row, add_annotation_row[row.names(annotation_row), ])  
+    colnames(annotation_row)[(old_colnames_length+1):ncol(annotation_row)] <- colnames(add_annotation_row)
+    # annotation_row$bif_time <- add_annotation_row[as.character(fData(absolute_cds[row.names(annotation_row), ])$gene_short_name), 1]
+  }
+  
+  if(!is.null(add_annotation_col)) {
+    if(nrow(add_annotation_col) != 100) {
+      stop('add_annotation_col should have only 100 rows (check genSmoothCurves before you supply the annotation data)!')
+    }
+    annotation_col <- add_annotation_col
+  } else {
+    annotation_col <- NA
+  }
+ 
+  if (use_gene_short_name == TRUE) {
+    if (is.null(fData(cds_subset)$gene_short_name) == FALSE) {
+      feature_label <- as.character(fData(cds_subset)[row.names(heatmap_matrix), 'gene_short_name'])
+      feature_label[is.na(feature_label)] <- row.names(heatmap_matrix)
+      
+      row_ann_labels <- as.character(fData(cds_subset)[row.names(annotation_row), 'gene_short_name'])
+      row_ann_labels[is.na(row_ann_labels)] <- row.names(annotation_row)
+    }
+    else {
+      feature_label <- row.names(heatmap_matrix)
+      row_ann_labels <- row.names(annotation_row)
+    }
+  }
+  else {
+    feature_label <- row.names(heatmap_matrix)
+    if(!is.null(annotation_row))
+      row_ann_labels <- row.names(annotation_row)
+  }
+  
+  row.names(heatmap_matrix) <- feature_label
+  if(!is.null(annotation_row))
+    row.names(annotation_row) <- row_ann_labels
+  
+  colnames(heatmap_matrix) <- c(1:ncol(heatmap_matrix))
+  
+  ph_res <- pheatmap(heatmap_matrix[, ], #ph$tree_row$order
+                     useRaster = T,
+                     cluster_cols = FALSE, 
+                     cluster_rows = cluster_rows, 
+                     show_rownames=show_rownames, 
+                     show_colnames=F, 
+                     #scale="row",
+                     clustering_distance_rows=row_dist, #row_dist
+                     clustering_method = hclust_method, #ward.D2
+                     cutree_rows=num_clusters,
+                     # cutree_cols = 2,
+                     annotation_row=annotation_row,
+                     annotation_col=annotation_col,
+                     treeheight_row = 20, 
+                     breaks=bks,
+                     fontsize = 6,
+                     color=hmcols, 
+                     border_color = NA,
+                     silent=TRUE,
+                     filename=NA
+  )
+  
+  grid::grid.rect(gp=grid::gpar("fill", col=NA))
+  grid::grid.draw(ph_res$gtable)
+  if (return_heatmap){
+    return(ph_res)
+  }
+}
+```
+
+```{r}
+newdata <- data.frame(Pseudotime = seq(min(pData(msg)$Pseudotime), max(pData(msg)$Pseudotime),length.out = 100)) 
+
+plot_pseudotime_heatmap2(msg[siggenes2, ],
+                        num_clusters = 20,
+                        cores = 1,
+                        show_rownames = F,
+                        add_annotation_col=newdata)
+
+
+newdata <- data.frame(Pseudotime = seq(min(pData(msg)$Pseudotime), max(pData(msg)$Pseudotime),length.out = 100)) 
+
+m <- genSmoothCurves(msg[siggenes2, ], cores=1, trend_formula = '~sm.ns(Pseudotime, df=3)',  
+                       relative_expr = T, new_data = newdata)
+```
+
+```{r}
+session_info()
+```
+ 
+ 

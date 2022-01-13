@@ -1,0 +1,181 @@
+---
+title: "all Tryps QC and Norm"
+author: "Virginia Howick"
+date: "09/05/2020"
+output: html_document
+---
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/Tryps/ANALYSIS_2")
+require("Matrix")
+library(scater, quietly = TRUE)
+require("SingleCellExperiment")
+options(stringsAsFactors = FALSE)
+library(plotly)
+library(ggplot2)
+library(SC3)
+```
+
+```{r}
+molecules <- read.table("/Users/vh3/Documents/Tryps/Expression_matrices_927/TCAcounts927.csv", header = TRUE, sep = ",", row.names=1, stringsAsFactors = TRUE)
+anno <- read.delim("/Users/vh3/Documents/Tryps/Expression_matrices_927/TCA_pheno.csv", header = TRUE, sep = ",", row.names = 1)
+
+table(colnames(molecules)==anno$sample_id)
+anno <- anno[match(colnames(molecules), anno$sample_id), ]
+
+mca <- SingleCellExperiment(assays = list(
+  counts = as.matrix(molecules),
+  logcounts = log2(as.matrix(molecules) + 1)
+), colData = anno)
+
+CellQC <- perCellQCMetrics(mca)
+FeatQC <- perFeatureQCMetrics(mca)
+
+colData(mca) <- cbind(colData(mca), CellQC)
+rowData(mca) <- cbind(rowData(mca), FeatQC)
+
+data <- as.data.frame(colData(mca))
+tapply(mca$total, data$run_number, sum)
+
+#Inspect poor quality cells
+
+mca <- mca[, mca$num_cells == "SC"]
+median(colData(mca)$detected)
+tab <- as.data.frame(colData(mca))
+ggplot(tab, aes(x=detected, fill = run_number)) + geom_histogram(binwidth = 25) + geom_vline(xintercept = 40, col ="navy")
+
+ggplot(tab, aes(x=detected, fill = run_number)) + geom_histogram(binwidth = 50) + geom_vline(xintercept = 40, col ="navy") + facet_grid(ShortenedLifeStage~., scales="free")
+
+ggplot(tab, aes(x=detected, fill = attachment)) + geom_histogram(binwidth = 50) + geom_vline(xintercept = 40, col ="navy") + geom_vline(xintercept = 3000, col ="navy") + facet_grid(ShortenedLifeStage~., scales="free")
+
+tab$ShortenedLifeStage <- factor(tab$ShortenedLifeStage, levels=c("PC", "MG", "PV", "SG"))
+cols2 <- c("DSP"="aquamarine", "hypotherm"="dodgerblue4", "live"="mediumorchid1")
+ggplot(tab, aes(x=detected, fill = fixation)) + geom_histogram(binwidth = 50) + geom_vline(xintercept = 40, col ="firebrick1") + geom_vline(xintercept = 3000, col ="firebrick1") + facet_grid(ShortenedLifeStage~., scales="free") + theme_bw() + scale_fill_manual(values=cols2)
+
+ggplot(tab, aes(x=sum, fill = fixation)) + geom_histogram(bins = 100) + geom_vline(xintercept = 1000, col ="navy") + facet_grid(ShortenedLifeStage~., scales="free")
+
+tabnoPV <- tab[tab$ShortenedLifeStage!="PV", ]
+ggplot(tabnoPV, aes(x=detected, fill = fixation)) + geom_histogram(binwidth = 50) + geom_vline(xintercept = 40, col ="firebrick1") + geom_vline(xintercept = 3000, col ="firebrick1") + facet_grid(ShortenedLifeStage~., scales="free") + theme_bw() + scale_fill_manual(values=cols2)
+
+mod <- lm(tabnoPV$detected~tabnoPV$fixation*tabnoPV$ShortenedLifeStage)
+anova(mod)
+
+tabnoPV$ag <- paste(tabnoPV$ShortenedLifeStage, tabnoPV$fixation, sep="_")
+
+tf <- tapply(tabnoPV$detected, tabnoPV$ag, median)
+tf
+
+tabSG <- tab[tab$ShortenedLifeStage=="SG", ]
+ggplot(tabSG, aes(x=detected, fill = fixation)) + geom_histogram(binwidth = 50) + geom_vline(xintercept = 40, col ="firebrick1") + geom_vline(xintercept = 3000, col ="firebrick1") + theme_bw() + scale_fill_manual(values=cols2)
+
+mod <- lm(tabSG$detected~tabSG$fixation)
+anova(mod)
+tf <- tapply(tabSG$detected, tabSG$fixation, median)
+tf
+
+meds <- tapply(colData(mca)$detected, colData(mca)$ShortenedLifeStage, median)
+meds
+
+ggplot(tab, aes(x=sum, fill = time)) + geom_histogram()
+
+sgonly <- mca[ , mca$ShortenedLifeStage == "SG"]
+sgtab <- as.data.frame(colData(sgonly))
+ggplot(sgtab, aes(x=detected, fill = attachment)) + geom_histogram(binwidth = 50) + geom_vline(xintercept = 250, col ="navy")
+
+# Filter cells with low counts
+filter_by_sum <- (mca$sum > 1000)
+table(filter_by_sum)
+# Filter cells with low numbers of features detected
+filter_by_expr_features <- (mca$detected > 40)
+table(filter_by_expr_features)
+
+filter_by_expr_features_high <- (mca$detected < 3000)
+table(filter_by_expr_features_high)
+
+
+# filter out control samples
+
+#filter_by_control <- mca$num_cells == "SC"
+#table(filter_by_control)
+
+# Filter data
+mca$use <- (
+  # sufficient features (genes)
+  filter_by_expr_features &
+    filter_by_expr_features_high &
+    # sufficient molecules counted
+    filter_by_sum 
+    # controls shouldn't be used in downstream analysis
+    #filter_by_control
+    )
+table(mca$use)
+table(mca$use, mca$ShortenedLifeStage)
+tab <- table(mca$use, mca$plate_name)
+#write.csv(tab, file="QC_250genes1000counts_20191029.csv")
+mca.qc.cells <- mca[ , colData(mca)$use]
+
+```
+
+```{r}
+#Identifying outliers by PCA
+
+mca.qc.cells <- runPCA(mca.qc.cells)
+plotPCA(mca.qc.cells,
+        size_by = "detected",
+        colour_by = "plate_name")
+
+
+
+#Looks at the distribution of reads for expression levels of genes
+#scater::plotQC(mca, type = "highest-expression")
+
+# Gene filtering 
+filter_genes <- apply(counts(mca[ , colData(mca)$use]), 1, function(x) length(x[x >= 1]) >= 2)
+
+table(filter_genes)
+rowData(mca)$use <- filter_genes
+
+dim(mca[rowData(mca)$use, colData(mca)$use])
+
+assay(mca, "logcounts_raw") <- log2(counts(mca) + 1)
+reducedDim(mca) <- NULL
+
+
+mca.qc <- mca[rowData(mca)$use, colData(mca)$use]
+
+mean(mca.qc$detected)
+median(mca.qc$detected)
+
+#saveRDS(mca.qc, file="tca.qc_20200519.rds")
+
+
+
+data <- as.data.frame(colData(mca.qc))
+tapply(data$sum, data$run_number, sum)
+
+tapply(data$detected, data$ShortenedLifeStage, median)
+
+```
+
+```{r}
+assay(mca.qc, "counts_raw") <- counts(mca.qc)
+
+logcounts(mca.qc) <- logNormCounts(mca.qc)
+
+
+cpm(mca.qc) <- calculateCPM(mca.qc)
+assay(mca.qc, "log_cpm") <- log2(calculateCPM(mca.qc) + 1)
+mca.qc <- runPCA(mca.qc, exprs_values = "log_cpm")
+plotPCA(mca.qc, colour_by="plate_name", size_by="detected")
+mca.qc <- runUMAP(mca.qc, exprs_values = "log_cpm")
+plotUMAP(mca.qc, colour_by="ShortenedLifeStage", size_by="detected")
+plotPCA(mca.qc, colour_by="ShortenedLifeStage", size_by="detected")
+plotUMAP(mca.qc, colour_by="strain", size_by="detected")
+set.seed(222)
+mca.qc <- runTSNE(mca.qc, exprs_values = "log_cpm")
+plotTSNE(mca.qc, colour_by="ShortenedLifeStage", size_by="detected")
+
+
+
+#saveRDS(mca.qc, file="tryps.qc.927_20200509.rds")
+```

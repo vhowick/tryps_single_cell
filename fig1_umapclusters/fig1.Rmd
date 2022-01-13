@@ -1,0 +1,292 @@
+---
+title: "Looking into sc3 run on scran normalized data"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r, message=FALSE}
+library(scater)
+library(SC3)
+library(gridExtra)
+library(viridis)
+library(gplots)
+library(dplyr)
+library(pheatmap)
+library(RColorBrewer)
+library(colorspace)
+library(devtools)
+setwd("/Users/virginiahowick/Documents/Tryps/")
+```
+
+
+
+```{r, tidy=TRUE}
+
+
+tca.qc.scran <- readRDS("/Users/virginiahowick/Documents/Tryps/for_github/sc_data/howick_tryps_sce.rds")
+
+```
+
+
+```{r, tidy=TRUE}
+set.seed(7)
+tca.qc.scran <- runUMAP(tca.qc.scran, n_neighbors=5, min_dist=1.0, spread=3.0, ntop=200)
+plotUMAP(tca.qc.scran, colour_by="ShortenedLifeStage")
+
+um <- plotUMAP(tca.qc.scran, colour_by="ShortenedLifeStage", shape_by="time")
+umdat <- um$data
+
+
+colors <- c("MG"="royalblue4", "PV"="darkturquoise", "SG"="deeppink")
+
+ggplot(umdat, aes(X, Y)) + 
+  geom_point(aes(colour=colour_by, shape=shape_by), size=2) + 
+  labs(x="UMAP 1", y="UMAP 2", color="Tissue", shape="Day PI") +
+  scale_color_manual(values = colors) +
+  theme_classic() +
+  theme(axis.text = element_blank())
+
+um <- plotUMAP(tca.qc.scran, colour_by="sc3_6_clusters", shape_by="ShortenedLifeStage")
+umdat <- um$data
+
+clustcol <- c("1"="purple", "2"="royalblue1", "3"="limegreen", "4"="salmon", "5"="skyblue4", "6"="hotpink")
+
+
+ggplot(umdat, aes(X, Y)) + 
+  geom_point(aes(colour=colour_by), size=2) + 
+  labs(x="UMAP 1", y="UMAP 2", color="Cluster") +
+  scale_color_manual(values = clustcol, breaks=c("1", "4", "6", "5", "2", "3"),
+                          labels=c("C1", "C2", "C3", "C4", "C5", "C6"))+
+  theme_classic() +
+  theme(axis.text = element_blank())
+
+
+col2hex(c("purple", "royalblue1", "limegreen", "salmon", "skyblue4", "hotpink"))
+
+
+
+```
+
+
+```{r, tidy=TRUE}
+hm <- sc3_plot_markers(
+    tca.qc.scran, k = 6, auroc = 0.75,
+    show_pdata = c(
+        "ShortenedLifeStage", 
+        "strain",
+        "attachment", 
+        "time",
+        "status"
+    )
+)
+
+```
+
+unable to recreate SC3 markers heatmap so using their functions from github
+```{r, tidy=TRUE}
+
+get_processed_dataset <- function(object) {
+    dataset <- logcounts(object)
+    if (!is.null(rowData(object)$sc3_gene_filter)) {
+        dataset <- dataset[rowData(object)$sc3_gene_filter, ]
+    }
+    return(dataset)
+}
+
+
+make_col_ann_for_heatmaps <- function(object, show_pdata) {
+    if (any(!show_pdata %in% colnames(colData(object)))) {
+        show_pdata_excl <- show_pdata[!show_pdata %in% colnames(colData(object))]
+        show_pdata <- show_pdata[show_pdata %in% colnames(colData(object))]
+        message(paste0("Provided columns '", paste(show_pdata_excl, collapse = "', '"), "' do not exist in the phenoData table!"))
+        if (length(show_pdata) == 0) {
+            return(NULL)
+        }
+    }
+    ann <- NULL
+    if (is.null(metadata(object)$sc3$svm_train_inds)) {
+        ann <- colData(object)[, colnames(colData(object)) %in% show_pdata]
+    } else {
+        ann <- colData(object)[metadata(object)$sc3$svm_train_inds, colnames(colData(object)) %in% 
+            show_pdata]
+    }
+    # remove columns with 1 value only
+    if (length(show_pdata) > 1) {
+        keep <- unlist(lapply(ann, function(x) {
+            length(unique(x))
+        })) > 1
+        if (!all(keep)) {
+            message(paste0("Columns '", paste(names(keep)[!keep], collapse = "', '"), "' were excluded from annotation since they contained only a single value."))
+        }
+        ann <- ann[, names(keep)[keep]]
+        if (ncol(ann) == 0) {
+            ann <- NULL
+        } else {
+            ann <- as.data.frame(lapply(ann, function(x) {
+                if (nlevels(as.factor(x)) > 9) 
+                  x else as.factor(x)
+            }))
+            # convert outlier scores back to numeric
+            for (i in grep("_log2_outlier_score", colnames(ann))) {
+                if (class(ann[, i]) == "factor") {
+                  ann[, i] <- as.numeric(levels(ann[, i]))[ann[, i]]
+                }
+            }
+        }
+    } else {
+        if (length(unique(ann)) > 1) {
+            ann <- as.data.frame(ann)
+            colnames(ann) <- show_pdata
+            if (!grepl("_log2_outlier_score", show_pdata)) {
+                ann <- as.data.frame(lapply(ann, function(x) {
+                  if (nlevels(as.factor(x)) > 9) 
+                    return(x) else return(as.factor(x))
+                }))
+            }
+        } else {
+            message(paste0("Column '", show_pdata, "' was excluded from annotation since they contained only a single value."))
+            ann <- NULL
+        }
+    }
+    return(ann)
+}
+
+
+organise_marker_genes <- function(object, k, p_val, auroc) {
+    dat <- rowData(object)[, c(paste0("sc3_", k, "_markers_clusts"), paste0("sc3_", k, 
+        "_markers_auroc"), paste0("sc3_", k, "_markers_padj"), "feature_symbol")]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_padj")] < p_val & !is.na(dat[, paste0("sc3_", 
+        k, "_markers_padj")]), ]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_auroc")] > auroc, ]
+    
+    d <- NULL
+    
+    for (i in sort(unique(dat[, paste0("sc3_", k, "_markers_clusts")]))) {
+        tmp <- dat[dat[, paste0("sc3_", k, "_markers_clusts")] == i, ]
+        tmp <- tmp[order(tmp[, paste0("sc3_", k, "_markers_auroc")], decreasing = TRUE), ]
+        d <- rbind(d, tmp)
+    }
+    
+    if(nrow(dat) > 0) {
+        return(d)
+    } else {
+        return(NULL)
+    }
+}
+
+markers_for_heatmap <- function(markers) {
+    res <- NULL
+    for (i in unique(markers[, 1])) {
+        tmp <- markers[markers[, 1] == i, ]
+        if (nrow(tmp) > 10) {
+            res <- rbind(res, tmp[1:10, ])
+        } else {
+            res <- rbind(res, tmp)
+        }
+    }
+    
+    return(res)
+}
+
+
+
+
+sc3_plot_markers.ginny <- function(object, k, auroc, p.val, show_pdata) {
+    if (is.null(metadata(object)$sc3$consensus)) {
+        warning(paste0("Please run sc3_consensus() first!"))
+        return(object)
+    }
+    hc <- metadata(object)$sc3$consensus[[as.character(k)]]$hc
+    dataset <- get_processed_dataset(object)
+    if (!is.null(metadata(object)$sc3$svm_train_inds)) {
+        dataset <- dataset[, metadata(object)$sc3$svm_train_inds]
+    }
+    
+    add_ann_col <- FALSE
+    ann <- NULL
+    if (!is.null(show_pdata)) {
+        ann <- make_col_ann_for_heatmaps(object, show_pdata)
+        if (!is.null(ann)) {
+            add_ann_col <- TRUE
+            # make same names for the annotation table
+            rownames(ann) <- colnames(dataset)
+        }
+    }
+    
+    # get all marker genes
+    markers <- organise_marker_genes(object, k, p.val, auroc)
+    
+    if(!is.null(markers)) {
+        # get top 10 marker genes of each cluster
+        markers <- markers_for_heatmap(markers)
+        #added the following line to add anno
+        markers$anno <- anno[match(markers$feature_symbol, anno[, 1]), 10]
+        markers$label <- paste(markers$feature_symbol, markers$anno, sep="::")
+        row.ann <- data.frame(Cluster = factor(markers[, 1], levels = unique(markers[, 1])))
+        #changed below from feat symb to label
+        rownames(row.ann) <- markers$label
+        #changed from feat to label
+        do.call(pheatmap::pheatmap, c(list(dataset[markers$label, , drop = FALSE], show_colnames = FALSE, 
+            cluster_rows = FALSE, cluster_cols = hc, cutree_cols = k, annotation_row = row.ann, annotation_names_row = FALSE, color = inferno(10), annotation_colors = ann_c,
+            gaps_row = which(diff(markers[, 1]) != 0), cellheight = 10), list(annotation_col = ann)[add_ann_col]))
+    } else {
+        message("No markers have been found, try to lower significance thresholds!")
+    }
+}
+
+
+```
+
+
+
+```{r, tidy=TRUE}
+###Set your color annotations here!!!
+
+time_col <- c("day40"="dodgerblue", "day21"="darkmagenta", "day24"="darkolivegreen1")
+col2hex(c("dodgerblue", "darkmagenta", "darkolivegreen1"))
+clustcol <- c("1"="purple", "2"="royalblue1", "4"="salmon", "5"="skyblue4", "6"="hotpink")
+
+sequential_hcl(2, palette = "Dark Mint")
+attach_col <- c("attached" = "#0E3F5C", "free" = "#D1FBD4")
+sequential_hcl(3, palette = "Viridis")
+strain_col <- c("1738"= "#009B95", "hybrid"="#4B0055","J10" ="#FDE333")
+
+ann_c <- list(ShortenedLifeStage = colors,
+              time = time_col,
+              Cluster = clustcol,
+              attachment=attach_col,
+              spr_strain=strain_col)
+
+
+
+
+```
+
+```{r}
+anno <- read.csv("/Users/virginiahowick/Documents/sanger_laptop_tryps/ANALYSIS_2/tbbtransanno.csv", header=TRUE)
+
+rowData(tca.qc.scran)$gene_name <- anno[match(rowData(tca.qc.scran)$feature_symbol, anno[, 1]), 10]
+rowData(tca.qc.scran)$anno <- paste(rowData(tca.qc.scran)$feature_symbol, rowData(tca.qc.scran)$gene_name, sep="::")
+
+tca.qc.scran2 <- tca.qc.scran
+rownames(tca.qc.scran2) <- rowData(tca.qc.scran)$anno
+rowData(tca.qc.scran)$feature_symbol <- rownames(tca.qc.scran2)
+sc3_plot_markers.ginny(
+    tca.qc.scran2, k = 6, auroc = 0.75, p.val = 0.01,
+    show_pdata = c(
+        "time",
+        "attachment",
+        "spr_strain",
+        "ShortenedLifeStage"
+    )
+)
+
+```
+
+```{r}
+session_info()
+```
+

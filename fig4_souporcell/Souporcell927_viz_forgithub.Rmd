@@ -1,0 +1,194 @@
+---
+title: "Souporcell from 927 genome"
+output:
+  html_document:
+    df_print: paged
+date: "02/12/20"
+---
+
+```{r, message=FALSE}
+setwd("/Users/virginiahowick/Documents/sanger_laptop_tryps/ANALYSIS_2")
+require("Matrix")
+library(scater, quietly = TRUE)
+options(stringsAsFactors = FALSE)
+library(ggplot2)
+library(viridis)
+library(scran)
+library(devtools)
+```
+
+```{r}
+insect_sc3 <- readRDS("/Users/virginiahowick/Documents/Tryps/for_github/sc_data/howick_tryps_sce.rds")
+
+# insect_sc3[, which(insect_sc3$run_number=="29748_4")]$run_number <- "29784_4"
+# 
+# insect_sc3$barcode <- paste(insect_sc3$run_number, insect_sc3$npgnum, "sorted.bam", sep="_")
+
+sprcell <- read.table("/Users/virginiahowick/Documents/sanger_laptop_tryps/ANALYSIS_2/clusters927.tsv", header=TRUE)
+
+cross <- insect_sc3[, insect_sc3$run_number=="29784_4"]
+cross <- cross[, cross$time=="day24"]
+
+#cross$assignment <- sprcell[match(cross$barcode, sprcell[,1]), 3]
+cross$barcode <- paste(cross$run_number, cross$npgnum, "sorted.bam", sep="_")
+cd <- as.data.frame(colData(cross))
+
+sprcell$strain <- cd[match(sprcell$barcode, cd[, 61]), 15]
+
+sprcell$run_number <- cd[match(sprcell$barcode, cd[, 61]), 10]
+
+sprcell$plate_name <- cd[match(sprcell$barcode, cd[, 61]), 24]
+```
+
+
+
+```{r}
+subspr <- sprcell[, 6:7]
+
+tot <- rowSums(subspr)
+nosubspr <- subspr/tot
+
+
+
+spr.pca <- prcomp(nosubspr,
+                  center = TRUE,
+                  scale. = TRUE) 
+
+
+pcs <- spr.pca$x
+combo <- cbind(sprcell, pcs)
+
+colnames(nosubspr) <- c("c1norm", "c0norm")
+combo <- cbind(combo, nosubspr)
+
+#write.csv(combo, "sprcell927_forhaynes_20200519.csv")
+
+ggplot(combo, aes(strain, c0norm)) + 
+  geom_boxplot()
+
+ggplot(combo, aes(strain, c0norm)) + 
+  geom_boxplot(outlier.shape = NA) + geom_jitter(aes(colour=assignment)) + theme_bw() + xlab("Sorted strain") + ylab("Cluster 0 likelihood")
+
+ggplot(combo, aes(strain, c0norm)) + 
+  geom_boxplot(outlier.shape = NA) + geom_jitter(aes(colour=status)) + theme_bw() + xlab("Sorted strain") + ylab("Cluster 0 likelihood")
+
+ggplot(combo, aes(strain, log_prob_doublet)) + 
+  geom_boxplot(outlier.shape = NA) + geom_jitter(aes(colour=status)) + theme_bw() + xlab("Sorted strain") + ylab("prob doublet")
+
+subspr <- sprcell[, 4:5]
+
+tot <- rowSums(subspr)
+nosubspr <- subspr/tot
+colnames(nosubspr) <- c("norm_prob_singlet", "norm_prob_doublet")
+combo <- cbind(combo, nosubspr)
+
+ggplot(combo, aes(strain, norm_prob_singlet)) + 
+  geom_boxplot(outlier.shape = NA) + geom_jitter(aes(colour=status)) + theme_bw() + xlab("Sorted strain") + ylab("Prob doublet") + theme(legend.position = "none")
+
+ggplot(combo, aes(strain, c0norm)) + 
+  geom_boxplot(outlier.shape = NA) + geom_jitter(aes(colour=status)) + theme_bw() + xlab("Sorted strain") + ylab("Cluster 0 likelihood") + theme(legend.position = "none")
+
+
+
+ggplot(combo, aes(PC1, PC2)) + 
+  geom_point(aes(colour=status, shape=factor(strain)), size=2) + 
+  scale_color_viridis(discrete = TRUE) +
+  theme_dark() +
+  theme(axis.text = element_blank()) +
+  labs(shape="Sort strain", color="status")
+
+
+ggplot(combo, aes(PC1, PC2)) + 
+  geom_point(aes(colour=assignment, shape=factor(strain)), size=2) + 
+  #labs(x="Dimension 1", y="Dimension 2") +
+  scale_color_viridis(discrete = TRUE) +
+  theme_dark() +
+  theme(axis.text = element_blank()) +
+  labs(shape="Sort strain", color="assignment")
+
+
+```
+
+
+
+
+```{r}
+tca.qc.raw <- readRDS("/Users/virginiahowick/Documents/sanger_laptop_tryps/ANALYSIS/tca.qc_20200519.rds")
+#tca.qc.raw <- tca.qc.raw[, tca.qc.raw$ShortenedLifeStage == "SG"]
+
+tca.qc.raw[, which(tca.qc.raw$run_number=="29748_4")]$run_number <- "29784_4"
+
+tca.qc.raw$barcode <- paste(tca.qc.raw$run_number, tca.qc.raw$npgnum, "sorted.bam", sep="_")
+
+cont <- "SG_337"
+tca.qc.raw <- tca.qc.raw[ , tca.qc.raw$sample_id != cont]
+
+tca.qc.raw <- tca.qc.raw[ , tca.qc.raw$run_number == "29784_4"]
+tca.qc.raw <- tca.qc.raw[ , tca.qc.raw$plate_name != "attached/free"]
+```
+
+```{r}
+set.seed(100)
+clust.tca <- quickCluster(tca.qc.raw) 
+tca.qc.scran <- computeSumFactors(tca.qc.raw, cluster=clust.tca, min.mean=10)
+tca.qc.scran <- logNormCounts(tca.qc.scran)
+assayNames(tca.qc.scran)
+```
+
+```{r}
+tca.qc.scran <- runPCA(tca.qc.scran, ntop=200)
+set.seed(222)
+tca.qc.scran <- runUMAP(tca.qc.scran, n_neighbors = 5, min_dist = 1, spread = 3,
+    ntop = 200)
+set.seed(222)
+tca.qc.scran <- runTSNE(tca.qc.scran, ntop=200)
+
+gridExtra::grid.arrange(
+    plotPCA(tca.qc.scran, colour_by="Tb927.10.12080", size_by="detected", add_legend=FALSE),
+    plotUMAP(tca.qc.scran, colour_by="Tb927.10.12080", size_by="detected", add_legend=FALSE),
+    plotTSNE(tca.qc.scran, colour_by="Tb927.10.12080", size_by="detected", add_legend=FALSE),
+    ncol=3)
+
+tca.qc.scran$assignment <- combo[match(tca.qc.scran$barcode, combo[, 1]), 3]
+#tca.qc.scran$status <- rep("singlet", length(tca.qc.scran$sample_id))
+tca.qc.scran$status <- combo[match(tca.qc.scran$barcode, combo[, 1]), 2]
+#tca.qc.scran[, which(is.na(tca.qc.scran$status))]$status <- "singlet"
+
+
+tca.qc.scran$spr_strain <- rep("1738", length(tca.qc.scran$sample_id))
+tca.qc.scran[, which(tca.qc.scran$assignment == "1")]$spr_strain <- "J10"
+tca.qc.scran[, which(tca.qc.scran$assignment == "0/1")]$spr_strain <- "hybrid"
+tca.qc.scran[, which(tca.qc.scran$assignment == "1/0")]$spr_strain <- "hybrid"
+
+cd <- read.csv("/Users/virginiahowick/Documents/sanger_laptop_tryps/ANALYSIS_2/fig1_sc3_clusters_cd.csv", header = TRUE, row.names = 1)
+
+tca.qc.scran$fig1_sc3_6_clusters <- cd[match(tca.qc.scran$sample_id, cd[,1]), 40]
+
+tca.qc.scran$cluster_name <- rep("C3", length(tca.qc.scran$sample_id))
+tca.qc.scran[, which(tca.qc.scran$fig1_sc3_6_clusters==5)]$cluster_name <- "C4"
+tca.qc.scran[, which(tca.qc.scran$fig1_sc3_6_clusters==2)]$cluster_name <- "C5"
+tca.qc.scran[, which(tca.qc.scran$fig1_sc3_6_clusters==3)]$cluster_name <- "C6"
+
+
+p <- plotUMAP(tca.qc.scran, colour_by="spr_strain", shape_by="cluster_name", add_legend=FALSE)
+umdat <- p$data
+
+strain_col <- c(`1738` = "#009B95", hybrid = "#4B0055", J10 = "#FDE333")
+
+ggplot(umdat, aes(X, Y)) + geom_point(aes(colour = colour_by, shape=shape_by), 
+    size = 2) + labs(x = "UMAP 1", y = "UMAP 2", color = "Strain", shape="Fig1 cluster") + 
+    scale_color_manual(values = strain_col) + theme_classic() + theme(axis.text = element_blank()) 
+
+
+p <- plotUMAP(tca.qc.scran, colour_by="COI", shape_by="COI", add_legend=FALSE)
+umdat <- p$data
+
+ggplot(umdat, aes(X, Y)) + geom_point(aes(colour = shape_by), 
+    size = 2) + labs(x = "UMAP 1", y = "UMAP 2", color = "Infection") + theme_classic() + theme(axis.text = element_blank())
+
+```
+
+```{r}
+session_info()
+```
+

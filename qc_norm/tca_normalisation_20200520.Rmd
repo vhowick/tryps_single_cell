@@ -1,0 +1,123 @@
+---
+title: "Normalization of tryps data"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/Tryps/ANALYSIS_2")
+library(scran)
+library(scater)
+library(DropletUtils)
+library(gridExtra)
+tca.qc.raw <- readRDS("/Users/vh3/Documents/Tryps/ANALYSIS/tca.qc_20200519.rds")
+tca.qc.raw <- tca.qc.raw[, tca.qc.raw$ShortenedLifeStage != "PC"]
+```
+Library size normalization:
+
+We define the library size as the total sum of counts across all genes for each cell, the expected value of which is assumed to scale with any cell-specific biases. The “library size factor” for each cell is then directly proportional to its library size where the proportionality constant is defined such that the mean size factor across all cells is equal to 1.
+
+Strictly speaking, the use of library size factors assumes that there is no “imbalance” in the differentially expressed (DE) genes between any pair of cells. That is, any upregulation for a subset of genes is cancelled out by the same magnitude of downregulation in a different subset of genes. This ensures that the library size is an unbiased estimate of the relative cell-specific bias by avoiding composition effects (Robinson and Oshlack 2010). However, balanced DE is not generally present in scRNA-seq applications, which means that library size normalization may not yield accurate normalized expression values for downstream analyses.
+```{r}
+lib.sf.tca <- librarySizeFactors(tca.qc.raw)
+summary(lib.sf.tca)
+hist(log10(lib.sf.tca), xlab="Log10[Size factor]", col='grey80')
+#tca.qc.raw$lib.sf.tca <- lib.sf.tca
+
+tca.qc.lib.sf <- logNormCounts(tca.qc.raw)
+```
+
+##Normalization by deconvolution:
+composition biases will be present when any unbalanced differential expression exists between samples. the net effect is that non-DE genes in A will incorrectly appear to be downregulated compared to B.
+
+single-cell data can be problematic for these bulk normalization methods due to the dominance of low and zero counts. To overcome this, we pool counts from many cells to increase the size of the counts for accurate size factor estimation (Lun, Bach, and Marioni 2016). Pool-based size factors are then “deconvolved” into cell-based factors for normalization of each cell’s expression profile. This is performed using the calculateSumFactors() function from scran, as shown below
+
+This avoids the assumption that most genes are non-DE across the entire population - only a non-DE majority is required between pairs of clusters, which is a weaker assumption for highly heterogeneous populations.
+
+```{r}
+set.seed(100)
+clust.tca <- quickCluster(tca.qc.raw) 
+table(clust.tca)
+
+deconv.sf.tca <- calculateSumFactors(tca.qc.raw, cluster=clust.tca, min.mean=1)
+summary(deconv.sf.tca)
+
+```
+
+We see that the deconvolution size factors exhibit cell type-specific deviations from the library size factors below. This is consistent with the presence of composition biases that are introduced by strong differential expression between cell types. Use of the deconvolution size factors adjusts for these biases to improve normalization accuracy for downstream applications.
+
+Accurate normalization is most important for procedures that involve estimation and interpretation of per-gene statistics. For example, composition biases can compromise DE analyses by systematically shifting the log-fold changes in one direction or another. However, it tends to provide less benefit over simple library size normalization for cell-based analyses such as clustering. The presence of composition biases already implies strong differences in expression profiles, so changing the normalization strategy is unlikely to affect the outcome of a clustering procedure.
+```{r}
+plot(lib.sf.tca, deconv.sf.tca, xlab="Library size factor",
+    ylab="Deconvolution size factor", log='xy', pch=16,
+    col=as.integer(factor(tca.qc.raw$ShortenedLifeStage)))
+abline(a=0, b=1, col="red")
+```
+
+##Scran normalize the data and save in the SCE
+```{r}
+set.seed(100)
+clust.tca <- quickCluster(tca.qc.raw) 
+tca.qc.scran <- computeSumFactors(tca.qc.raw, cluster=clust.tca, min.mean=1)
+tca.qc.scran <- logNormCounts(tca.qc.scran)
+assayNames(tca.qc.scran)
+```
+
+
+##Downsampling and log-transforming
+In rare cases, direct scaling of the counts is not appropriate due to the effect described by Lun (2018). Briefly, this is caused by the fact that the mean of the log-normalized counts is not the same as the log-transformed mean of the normalized counts. The difference between them depends on the mean and variance of the original counts, such that there is a systematic trend in the mean of the log-counts with respect to the count size. This typically manifests as trajectories correlated strongly with library size even after library size normalization, as shown in Figure 7.5 for synthetic scRNA-seq data generated with a pool-and-split approach (Tian et al. 2019).
+```{r}
+tca.qc.ds <- logNormCounts(tca.qc.raw, downsample=TRUE)
+
+assay(tca.qc.scran, "ds_logcounts") <- assays(tca.qc.ds)[["logcounts"]]
+
+#also add in the size factor norm from above
+assay(tca.qc.scran, "sf_logcounts") <- assays(tca.qc.lib.sf)[["logcounts"]]
+
+
+```
+
+```{r}
+
+tca.qc.scran <- runPCA(tca.qc.scran, ntop=150)
+tca.qc.lib.sf <- runPCA(tca.qc.lib.sf, ntop=150)
+tca.qc.ds <- runPCA(tca.qc.ds, ntop=150)
+
+gridExtra::grid.arrange(
+    plotPCA(tca.qc.lib.sf, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    plotPCA(tca.qc.scran, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    plotPCA(tca.qc.ds, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    ncol=3)
+    
+
+set.seed(222)
+tca.qc.scran <- runUMAP(tca.qc.scran, ntop=150)
+set.seed(222)
+tca.qc.lib.sf <- runUMAP(tca.qc.lib.sf, ntop=150)
+set.seed(222)
+tca.qc.ds <- runUMAP(tca.qc.ds, ntop=150)
+gridExtra::grid.arrange(
+    plotUMAP(tca.qc.lib.sf, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    plotUMAP(tca.qc.scran, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    plotUMAP(tca.qc.ds, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    ncol=3)
+
+
+set.seed(222)
+tca.qc.scran <- runTSNE(tca.qc.scran, ntop=150)
+set.seed(222)
+tca.qc.lib.sf <- runTSNE(tca.qc.lib.sf, ntop=150)
+set.seed(222)
+tca.qc.ds <- runTSNE(tca.qc.ds, ntop=150)
+gridExtra::grid.arrange(
+    plotTSNE(tca.qc.lib.sf, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    plotTSNE(tca.qc.scran, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    plotTSNE(tca.qc.ds, colour_by="ShortenedLifeStage", size_by="detected", add_legend=FALSE),
+    ncol=3)
+
+saveRDS(tca.qc.scran, file="tca.qc.scran_20200520.rds")
+
+```
+
